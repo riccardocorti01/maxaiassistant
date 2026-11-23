@@ -1,5 +1,5 @@
 // Ambient global so the renderer is fully typed against window.opendex.
-import type { OpenDexApi } from "./index";
+import type { OpenDexApi } from "./api-types";
 
 declare global {
   interface Window {

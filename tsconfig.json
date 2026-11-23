@@ -11,7 +11,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["node", "electron-vite/node"],
+    "types": ["node", "vite/client"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/renderer/src/*"],
@@ -19,10 +19,18 @@
     }
   },
   "include": [
-    "electron.vite.config.ts",
+    "server.ts",
+    "vite.config.ts",
     "scripts/**/*.ts",
     "src/**/*.ts",
     "src/**/*.tsx"
   ],
-  "exclude": ["node_modules", "out", "dist"]
+  "exclude": [
+    "node_modules",
+    "out",
+    "dist",
+    "src/main/index.ts",
+    "src/main/updater.ts",
+    "src/preload/index.ts"
+  ]
 }

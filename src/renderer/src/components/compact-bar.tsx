@@ -154,7 +154,7 @@ export function CompactBar({
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="flex h-screen w-screen flex-col overflow-hidden rounded-b-2xl bg-black"
+      className="flex h-full w-full flex-col overflow-hidden rounded-b-2xl bg-black"
     >
       {/* Top bar: equal-share wings (so the fixed center gap stays centered under
           the physical notch) — status indicator + optional caption on the left,

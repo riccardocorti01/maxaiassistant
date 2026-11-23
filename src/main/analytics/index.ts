@@ -1,70 +1,48 @@
-// Anonymous usage analytics via the GA4 Measurement Protocol.
-//
-// Privacy contract: we NEVER send voice audio, transcripts, prompts, model
-// replies, API keys, opened URLs, or file paths. Only coarse, non-identifying
-// signals (app version, OS, and which features/config options are in use) tied
-// to a random, locally-generated client id. The whole thing is gated on
-// `config.analytics.enabled` (opt-out) and is fire-and-forget — it must never
-// block, throw, or slow down the app.
-
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { app } from "electron";
 import { getConfig } from "../config/store";
 
-// Don't pollute production data with developer runs. Set GA_DEBUG=1 to send
-// from a `pnpm dev` session when you actually want to test the pipeline.
-const devSkip = (): boolean => !app.isPackaged && process.env.GA_DEBUG !== "1";
+const devSkip = (): boolean =>
+  process.env.NODE_ENV !== "production" && process.env.GA_DEBUG !== "1";
 
-// GA4 credentials. The measurement id is public (it ships in every gtag web
-// page); the api secret only authorizes sending events to this property. Both
-// are safe to bundle in a client. Env vars win so dev can point at a test
-// property without editing source.
 const GA_MEASUREMENT_ID = process.env.GA_MEASUREMENT_ID ?? "G-HBB5QNHS90";
 const GA_API_SECRET = process.env.GA_API_SECRET ?? "ShIZno_5RQavnZFZ6UjU_w";
-
 const ENDPOINT = "https://www.google-analytics.com/mp/collect";
 
 let clientId = "";
 let sessionId = "";
 let userAgent = "";
 
-// GA4's Measurement Protocol fills the built-in Device / Operating system /
-// Browser dimensions from the request's `User-Agent` header (there is no body
-// field for them). A server request has no browser UA, so without this those
-// dimensions come back "(not set)". We synthesize a desktop UA per platform so
-// GA can categorize the OS + device. (Screen resolution is browser-only and
-// still won't populate from a server hit.)
 function buildUserAgent(): string {
-  const chrome = process.versions.chrome ?? "120.0.0.0";
   const webkit = "AppleWebKit/537.36 (KHTML, like Gecko)";
-  switch (process.platform) {
-    case "win32":
-      return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${webkit} Chrome/${chrome} Safari/537.36`;
-    case "linux":
-      return `Mozilla/5.0 (X11; Linux ${process.arch === "arm64" ? "aarch64" : "x86_64"}) ${webkit} Chrome/${chrome} Safari/537.36`;
-    default:
-      return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${webkit} Chrome/${chrome} Safari/537.36`;
-  }
+  return `Mozilla/5.0 (X11; Linux ${process.arch === "arm64" ? "aarch64" : "x86_64"}) ${webkit} Chrome/120.0.0.0 Safari/537.36`;
 }
 
-/** A stable, anonymous id persisted in userData (not tied to any account/PII). */
 function loadClientId(): string {
-  const file = join(app.getPath("userData"), "analytics-client-id");
+  const dir = join(process.cwd(), ".opendex-data");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    // ignore
+  }
+  const file = existsSync(dir)
+    ? join(dir, "analytics-client-id")
+    : join(tmpdir(), "opendex-analytics-client-id");
   try {
     if (existsSync(file)) {
       const existing = readFileSync(file, "utf8").trim();
       if (existing) return existing;
     }
   } catch {
-    // fall through and regenerate
+    // fall through
   }
   const id = randomUUID();
   try {
     writeFileSync(file, id, "utf8");
   } catch {
-    // best effort — a non-persisted id still works for this session
+    // ignore
   }
   return id;
 }
@@ -75,7 +53,6 @@ export function initAnalytics(): void {
   userAgent = buildUserAgent();
 }
 
-/** Inert until real GA4 credentials are configured (placeholder → no sends). */
 function credsConfigured(): boolean {
   return (
     GA_MEASUREMENT_ID.startsWith("G-") &&
@@ -92,22 +69,16 @@ function analyticsEnabled(): boolean {
   }
 }
 
-/** Non-PII params attached to every event. */
 function baseParams(): Record<string, string | number> {
   return {
-    app_version: app.getVersion(),
+    app_version: "1.1.14",
     os: process.platform,
     arch: process.arch,
-    // GA4 needs these for the event to count toward sessions/engagement.
     session_id: sessionId,
     engagement_time_msec: 100,
   };
 }
 
-/**
- * Send one anonymous event. No-op when disabled, unconfigured, or pre-init.
- * Fire-and-forget: failures are swallowed so analytics can never affect the app.
- */
 export function track(
   name: string,
   params: Record<string, string | number | boolean> = {},
@@ -123,12 +94,11 @@ export function track(
       method: "POST",
       headers: {
         "content-type": "application/json",
-        // Lets GA4 derive the built-in Device / OS / Browser dimensions.
         "user-agent": userAgent || buildUserAgent(),
       },
       body,
     }).catch(() => {});
   } catch {
-    // never throw from a tracking call
+    // never throw
   }
 }

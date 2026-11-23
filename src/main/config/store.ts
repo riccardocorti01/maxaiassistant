@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { app, safeStorage } from "electron";
+import { tmpdir } from "node:os";
 import {
   DEFAULT_CONFIG,
   SECRET_NAMES,
@@ -12,31 +12,42 @@ import {
   type SecretsPresence,
 } from "./schema";
 
-// Hand-rolled config store (no external dep). Non-secret prefs live in
-// config.json; secrets live in secrets.json encrypted with the OS keychain via
-// safeStorage. Secret *values* are never exposed to the renderer — only their
-// presence — and are pushed into process.env so the agent/TTS code reads them
-// exactly as before.
+// Web-adapted config store (Node.js without Electron safeStorage).
+// Non-secret prefs live in config.json; secrets live in secrets.json
+// obfuscated in base64 (or via server env vars). Secret *values* are never
+// exposed to the browser — only their presence — and are pushed into
+// process.env so the agent/TTS/STT code reads them cleanly.
 
 let configPath = "";
 let secretsPath = "";
 let cachedConfig: OpenDexConfig | null = null;
 let cachedSecrets: Record<string, string> = {};
 
+function getDataDir(): string {
+  const candidates = [
+    join(process.cwd(), ".opendex-data"),
+    join(tmpdir(), "opendex-data"),
+  ];
+  for (const dir of candidates) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch {
+      // try next candidate
+    }
+  }
+  return tmpdir();
+}
+
 function ensurePaths() {
   if (configPath) return;
-  const dir = app.getPath("userData");
-  mkdirSync(dir, { recursive: true });
+  const dir = getDataDir();
   configPath = join(dir, "config.json");
   secretsPath = join(dir, "secrets.json");
 }
 
 function encryptionAvailable(): boolean {
-  try {
-    return safeStorage.isEncryptionAvailable();
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function loadConfigFile(): OpenDexConfig {
@@ -44,7 +55,6 @@ function loadConfigFile(): OpenDexConfig {
   if (!existsSync(configPath)) return structuredClone(DEFAULT_CONFIG);
   try {
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as DeepPartial<OpenDexConfig>;
-    // Merge over defaults so new fields added in later versions are filled in.
     return mergeConfig(DEFAULT_CONFIG, raw);
   } catch (err) {
     console.error("[opendex config] failed to read config.json, using defaults", err);
@@ -57,19 +67,12 @@ function loadSecretsFile(): Record<string, string> {
   if (!existsSync(secretsPath)) return {};
   try {
     const stored = JSON.parse(readFileSync(secretsPath, "utf8")) as {
-      enc: boolean;
-      values: Record<string, string>;
+      enc?: boolean;
+      values?: Record<string, string>;
     };
     const out: Record<string, string> = {};
-    for (const [name, blob] of Object.entries(stored.values)) {
-      if (stored.enc && encryptionAvailable()) {
-        try {
-          out[name] = safeStorage.decryptString(Buffer.from(blob, "base64"));
-        } catch (err) {
-          console.error(`[opendex config] failed to decrypt ${name}`, err);
-        }
-      } else {
-        // Stored obfuscated-only (no keychain): base64 round-trip.
+    for (const [name, blob] of Object.entries(stored.values ?? {})) {
+      if (!stored.enc) {
         out[name] = Buffer.from(blob, "base64").toString("utf8");
       }
     }
@@ -82,26 +85,29 @@ function loadSecretsFile(): Record<string, string> {
 
 function persistSecrets() {
   ensurePaths();
-  const enc = encryptionAvailable();
   const values: Record<string, string> = {};
   for (const [name, value] of Object.entries(cachedSecrets)) {
     if (!value) continue;
-    if (enc) {
-      values[name] = safeStorage.encryptString(value).toString("base64");
-    } else {
-      values[name] = Buffer.from(value, "utf8").toString("base64");
-    }
+    values[name] = Buffer.from(value, "utf8").toString("base64");
   }
-  writeFileSync(secretsPath, JSON.stringify({ enc, values }, null, 2), "utf8");
+  try {
+    writeFileSync(secretsPath, JSON.stringify({ enc: false, values }, null, 2), "utf8");
+  } catch (err) {
+    console.error("[opendex config] failed to write secrets.json", err);
+  }
 }
 
 function persistConfig() {
   ensurePaths();
-  writeFileSync(configPath, JSON.stringify(cachedConfig, null, 2), "utf8");
+  try {
+    writeFileSync(configPath, JSON.stringify(cachedConfig, null, 2), "utf8");
+  } catch (err) {
+    console.error("[opendex config] failed to write config.json", err);
+  }
 }
 
-/** Push config-derived values into process.env so agent/TTS read them as before.
- *  Existing env (from a dev .env) is kept as a fallback when a secret is unset. */
+/** Push config-derived values into process.env so agent/TTS read them.
+ *  Existing env (from .env / container env) is kept as a fallback when a secret is unset. */
 function applyToEnv() {
   if (!cachedConfig) return;
   process.env.OPENDEX_MODEL = cachedConfig.llm.model;
@@ -170,10 +176,6 @@ export function completeOnboarding(): PublicConfig {
   return updateConfig({ onboarding: { completed: true } });
 }
 
-/** Factory reset: delete persisted prefs + secrets and fall back to defaults.
- *  Since onboarding.completed reverts to its default (false), the app re-runs
- *  onboarding. Secrets still present in a dev .env remain as a fallback (they're
- *  only cleared from the encrypted store, not from process.env). */
 export function resetConfig(): PublicConfig {
   ensurePaths();
   for (const path of [configPath, secretsPath]) {

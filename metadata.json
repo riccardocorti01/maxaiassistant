@@ -1,0 +1,5 @@
+{
+  "name": "OpenDex",
+  "description": "OpenDex — a voice-first agentic assistant with customizable themes, local/cloud speech engines, and tool-using skills.",
+  "requestFramePermissions": ["microphone"]
+}

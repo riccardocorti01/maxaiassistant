@@ -1,14 +1,42 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { X } from "lucide-react";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { UpdateBanner } from "@/components/update-banner";
 import { getDexTheme } from "@/components/themes/registry";
 import { useConfig } from "@/lib/use-config";
 import { useDex, type UseDexOptions } from "@/lib/dex/use-dex";
-import type { PublicConfig } from "../../main/config/schema";
-import type { OpenDexConfig } from "../../main/config/schema";
+import { usePermission } from "@/lib/use-permission";
+import { PermissionPrompt } from "@/components/permission-prompt";
+import { SettingsApp } from "@/components/settings/settings-view";
+import { OverlayApp } from "./OverlayApp";
+import { NotchApp } from "./NotchApp";
+import { webShellStore } from "@/lib/web-bridge";
+import type { OpenDexConfig, PublicConfig } from "../../main/config/schema";
+import type { WindowMode } from "../../main/ipc/channels";
 
 export function App() {
   const { data, loading, setConfig, setSecret, completeOnboarding } = useConfig();
+  const [settingsOpen, setSettingsOpen] = useState(() => webShellStore.getSettingsOpen());
+  const permission = usePermission();
+
+  useEffect(() => webShellStore.onSettingsOpen(setSettingsOpen), []);
+
+  // Close settings modal automatically if config is reset back to onboarding
+  useEffect(() => {
+    if (data && !data.config.onboarding.completed && settingsOpen) {
+      webShellStore.setSettingsOpen(false);
+    }
+  }, [data, settingsOpen]);
+
+  // Escape closes settings modal
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") webShellStore.setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
 
   if (loading || !data) {
     return (
@@ -20,19 +48,44 @@ export function App() {
     );
   }
 
-  if (!data.config.onboarding.completed) {
-    return (
-      <OnboardingWizard
-        data={data}
-        setConfig={setConfig}
-        setSecret={setSecret}
-        onComplete={completeOnboarding}
-      />
-    );
-  }
+  return (
+    <>
+      {!data.config.onboarding.completed ? (
+        <OnboardingWizard
+          data={data}
+          setConfig={setConfig}
+          setSecret={setSecret}
+          onComplete={completeOnboarding}
+        />
+      ) : (
+        <MainExperience data={data} />
+      )}
 
-  // Onboarding done — config edits now happen in the dedicated settings window.
-  return <MainExperience data={data} />;
+      {/* In-browser Settings modal (replaces Electron settings BrowserWindow) */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="relative flex h-[min(720px,88vh)] w-full max-w-4xl overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+            <button
+              type="button"
+              onClick={() => webShellStore.setSettingsOpen(false)}
+              aria-label="Close settings"
+              className="absolute right-4 top-4 z-10 flex size-8 items-center justify-center rounded-full border border-border bg-dex-surface/80 text-muted-foreground transition hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+            <SettingsApp />
+          </div>
+        </div>
+      )}
+
+      {/* In-browser Permission prompt modal (replaces Electron permission popup) */}
+      {permission.current && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <PermissionPrompt request={permission.current} onRespond={permission.respond} />
+        </div>
+      )}
+    </>
+  );
 }
 
 function greetingEnabled(config: OpenDexConfig): boolean {
@@ -45,6 +98,13 @@ function greetingEnabled(config: OpenDexConfig): boolean {
 
 function MainExperience({ data }: { data: PublicConfig }) {
   const cfg = data.config;
+  const [windowMode, setWindowMode] = useState<WindowMode>(() =>
+    webShellStore.getWindowMode(),
+  );
+  const [notchSize, setNotchSize] = useState(() => webShellStore.getNotchSize());
+
+  useEffect(() => window.opendex.onWindowMode(setWindowMode), []);
+  useEffect(() => webShellStore.onNotchSize(setNotchSize), []);
 
   const dexOptions = useMemo<UseDexOptions>(
     () => ({
@@ -77,8 +137,6 @@ function MainExperience({ data }: { data: PublicConfig }) {
   const dex = useDex(dexOptions);
   const ThemeComponent = getDexTheme(cfg.appearance.theme).Component;
 
-  // Summon hotkey → re-broadcast as a window-level signal the active text input
-  // picks up (TextComposer focuses itself). Decoupled so it works in any theme.
   useEffect(
     () =>
       window.opendex.onSummoned(() =>
@@ -87,7 +145,6 @@ function MainExperience({ data }: { data: PublicConfig }) {
     [],
   );
 
-  // Session actions relayed from the notch window (which can't reach `useDex`).
   const { submitText, toggleMute, newConversation } = dex;
   useEffect(
     () =>
@@ -101,37 +158,49 @@ function MainExperience({ data }: { data: PublicConfig }) {
 
   return (
     <div className="relative flex flex-1 flex-col">
-      {/* Frameless title bar: a draggable strip across the top, inset from the
-          corner controls (brand mark, settings gear). */}
-      {window.opendex.platform === "darwin" && (
-        <div className="titlebar-drag fixed inset-x-[72px] top-0 z-30 h-9" />
+      <div className={windowMode === "notch" ? "hidden" : "flex flex-1 flex-col"}>
+        <ThemeComponent
+          name={cfg.assistant.name}
+          wakeWord={cfg.assistant.wakeWord}
+          status={dex.status}
+          transcript={dex.transcript}
+          liveCaption={dex.liveCaption}
+          spokenCaption={dex.spokenCaption}
+          getAmplitude={dex.getAmplitude}
+          toolInvocations={dex.toolInvocations}
+          onNewConversation={dex.newConversation}
+          isMuted={dex.isMuted}
+          briefingActive={dex.briefingActive}
+          unsupported={dex.status === "unsupported"}
+          canPushToTalk={dex.canPushToTalk}
+          onPushToTalk={dex.pushToTalk}
+          onSubmitText={dex.submitText}
+          toggleMute={dex.toggleMute}
+          onOpenSettings={() => window.opendex.openSettings()}
+          onMinimize={() => window.opendex.setWindowMode("notch")}
+        />
+      </div>
+
+      {/* Compact notch mode inside the browser viewport */}
+      {windowMode === "notch" && (
+        <div className="flex flex-1 flex-col items-center justify-center p-6">
+          <div className="fixed inset-x-0 top-0 z-40 flex justify-center pointer-events-none">
+            <div
+              className="pointer-events-auto shadow-2xl transition-all duration-200"
+              style={{ width: notchSize.width, height: notchSize.height }}
+            >
+              <NotchApp />
+            </div>
+          </div>
+          <div className="text-center text-xs text-muted-foreground">
+            OpenDex is running in compact notch mode above. Hover the bar or click expand to return.
+          </div>
+        </div>
       )}
 
-      <ThemeComponent
-        name={cfg.assistant.name}
-        wakeWord={cfg.assistant.wakeWord}
-        status={dex.status}
-        transcript={dex.transcript}
-        liveCaption={dex.liveCaption}
-        spokenCaption={dex.spokenCaption}
-        getAmplitude={dex.getAmplitude}
-        toolInvocations={dex.toolInvocations}
-        onNewConversation={dex.newConversation}
-        isMuted={dex.isMuted}
-        briefingActive={dex.briefingActive}
-        unsupported={dex.status === "unsupported"}
-        canPushToTalk={dex.canPushToTalk}
-        onPushToTalk={dex.pushToTalk}
-        onSubmitText={dex.submitText}
-        toggleMute={dex.toggleMute}
-        onOpenSettings={() => window.opendex.openSettings()}
-        onMinimize={() => window.opendex.setWindowMode("notch")}
-      />
+      {/* In-browser Overlay HUD (tool activity banners + Stop control) */}
+      <OverlayApp />
 
-      {/* Global chrome. Tool-activity hints + the Stop
-          control now live in the always-on-top overlay HUD window (a separate
-          renderer), so they stay visible even when this window is hidden or
-          behind another app — they're intentionally not rendered here. */}
       {dex.loadingModel.active && (
         <div className="fixed inset-x-0 top-16 z-30 flex justify-center">
           <div className="flex items-center gap-3 rounded-full border border-border bg-dex-surface/85 px-5 py-2 text-sm text-foreground/80 backdrop-blur">

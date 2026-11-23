@@ -13,11 +13,8 @@ export interface AppleAvailability {
 
 /**
  * Maps the configured provider to a concrete AI SDK model. Returns either a
- * `LanguageModel` instance (direct providers, apple) or a bare model-id string
+ * `LanguageModel` instance (direct providers) or a bare model-id string
  * (the gateway path, resolved by the SDK's global Vercel AI Gateway provider).
- *
- * Throws a user-facing error for providers that can't run — the chat handler
- * surfaces the message as a spoken apology.
  */
 export async function resolveModel(config: OpenDexConfig): Promise<LanguageModel> {
   const { provider, model } = config.llm;
@@ -31,37 +28,20 @@ export async function resolveModel(config: OpenDexConfig): Promise<LanguageModel
     case "xai":
       if (!process.env.XAI_API_KEY) throw new Error("no xAI API key is set");
       return createXai({ apiKey: process.env.XAI_API_KEY })(model);
-    case "apple": {
-      // Native (Swift/Rust), macOS-only — dynamic-imported so non-darwin builds
-      // never load the binary, and the chunk is only pulled when selected.
-      const { appleAI, appleAISDK } = await import("@meridius-labs/apple-on-device-ai");
-      const { available, reason } = await appleAISDK.checkAvailability();
-      if (!available) throw new Error(reason || "Apple Intelligence is unavailable");
-      return appleAI("apple-on-device");
-    }
+    case "apple":
+      throw new Error("Apple Intelligence requires macOS on Apple Silicon");
     case "opendex":
       throw new Error("the OpenDex subscription isn't available yet");
     case "gateway":
     default:
-      // A bare model id routes through the SDK's global AI Gateway provider,
-      // which reads AI_GATEWAY_API_KEY from the environment.
+      if (!process.env.AI_GATEWAY_API_KEY) {
+        throw new Error("no Vercel AI Gateway API key is set");
+      }
       return model;
   }
 }
 
-/** Probe Apple on-device availability for the UI (provider picker gate). Never
- *  throws — a missing binary / unsupported platform resolves to unavailable. */
+/** Probe Apple on-device availability for the UI (always unavailable in web/Linux runtime). */
 export async function checkAppleAvailability(): Promise<AppleAvailability> {
-  if (process.platform !== "darwin") {
-    return { available: false, reason: "Requires macOS on Apple Silicon" };
-  }
-  try {
-    const { appleAISDK } = await import("@meridius-labs/apple-on-device-ai");
-    return await appleAISDK.checkAvailability();
-  } catch (err) {
-    return {
-      available: false,
-      reason: err instanceof Error ? err.message : "Apple Intelligence is unavailable",
-    };
-  }
+  return { available: false, reason: "Requires macOS on Apple Silicon (Desktop App)" };
 }

@@ -23,7 +23,7 @@ export function PermissionPrompt({
   }, [onRespond]);
 
   return (
-    <div className="flex h-screen w-screen flex-col gap-4 overflow-hidden rounded-2xl border border-border bg-popover p-6 text-popover-foreground shadow-2xl">
+    <div className="flex min-h-[300px] w-full max-w-[460px] flex-col gap-4 overflow-hidden rounded-2xl border border-border bg-popover p-6 text-popover-foreground shadow-2xl">
       <div className="flex flex-col gap-1.5">
         <div className="font-mono text-[10px] uppercase tracking-[0.35em] text-muted-foreground">
           Permission required
